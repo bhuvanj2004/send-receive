@@ -1,39 +1,37 @@
 import streamlit as st
-import random
 import time
-from Crypto.Cipher import AES
+import random
 import networkx as nx
 import matplotlib.pyplot as plt
+from Crypto.Cipher import AES
 
-# AES encryption
+# ========= AES ENCRYPTION =========
 def aes_encrypt(data, key):
-    pad_len = 16 - (len(data) % 16)
+    pad_len = 16 - len(data) % 16
     data += bytes([pad_len]) * pad_len
     cipher = AES.new(key, AES.MODE_ECB)
     return cipher.encrypt(data)
 
-# AES decryption
-def aes_decrypt(ciphertext, key):
+def aes_decrypt(data, key):
     cipher = AES.new(key, AES.MODE_ECB)
-    decrypted = cipher.decrypt(ciphertext)
+    decrypted = cipher.decrypt(data)
     pad_len = decrypted[-1]
     return decrypted[:-pad_len]
 
-# Character stuffing
+# ========= CHARACTER STUFFING =========
 def character_stuff(data):
     stuffed = bytearray()
     for byte in data:
-        if byte in (0x7E, 0x7D):
+        if byte == 0x7E or byte == 0x7D:
             stuffed.append(0x7D)
             stuffed.append(byte ^ 0x20)
         else:
             stuffed.append(byte)
     return bytes(stuffed)
 
-# Character unstuffing
 def character_unstuff(data):
-    i = 0
     unstuffed = bytearray()
+    i = 0
     while i < len(data):
         if data[i] == 0x7D:
             i += 1
@@ -43,38 +41,48 @@ def character_unstuff(data):
         i += 1
     return bytes(unstuffed)
 
-# Bit error simulation
-def simulate_bit_errors(data, error_rate_percent):
-    corrupted = bytearray(data)
-    num_bits = len(data) * 8
-    num_errors = int((error_rate_percent / 100.0) * num_bits)
-    for _ in range(num_errors):
-        bit_index = random.randint(0, num_bits - 1)
-        byte_index = bit_index // 8
-        bit_in_byte = bit_index % 8
-        corrupted[byte_index] ^= 1 << bit_in_byte
-    return bytes(corrupted)
+# ========= RIP PATHFINDING =========
+def build_routing_graph(rip_table):
+    G = nx.DiGraph()
+    for entry in rip_table:
+        G.add_edge(entry['src'], entry['dst'], weight=entry['cost'])
+    return G
 
-# TCP Tahoe simulation
-def simulate_tcp_on_data(total_packets, ssthresh_init, loss_packets):
+def get_shortest_path(graph, src, dst):
+    try:
+        path = nx.shortest_path(graph, source=src, target=dst, weight='weight')
+        return path
+    except nx.NetworkXNoPath:
+        return None
+
+def draw_graph(graph, path=None):
+    pos = nx.spring_layout(graph, seed=42)
+    edge_labels = nx.get_edge_attributes(graph, 'weight')
+    plt.figure(figsize=(6, 4))
+    nx.draw(graph, pos, with_labels=True, node_color='lightblue', node_size=800)
+    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels)
+    if path:
+        path_edges = list(zip(path, path[1:]))
+        nx.draw_networkx_edges(graph, pos, edgelist=path_edges, edge_color='red', width=2)
+    st.pyplot(plt)
+
+# ========= TCP SIMULATION =========
+def simulate_tcp(total_packets, ssthresh, loss_packets):
     cwnd = 1
-    ssthresh = ssthresh_init
     state = 'Slow Start'
-
     time_series = []
     cwnd_series = []
     ssthresh_series = []
     state_series = []
 
-    i = 0
-    while i < total_packets:
-        time_series.append(i)
+    for t in range(total_packets):
+        time_series.append(t)
         cwnd_series.append(cwnd)
         ssthresh_series.append(ssthresh)
         state_series.append(state)
 
-        if i in loss_packets:
-            ssthresh = max(cwnd // 2, 1)
+        if t in loss_packets:
+            ssthresh = max(1, cwnd // 2)
             cwnd = 1
             state = 'Slow Start'
         else:
@@ -84,100 +92,104 @@ def simulate_tcp_on_data(total_packets, ssthresh_init, loss_packets):
                     state = 'Congestion Avoidance'
             elif state == 'Congestion Avoidance':
                 cwnd += 1
-
-        i += 1
-
     return time_series, cwnd_series, ssthresh_series, state_series
 
-# RIP topology plotting
-def plot_rip_graph(rip_table, source=None, target=None):
-    G = nx.DiGraph()
-    for entry in rip_table:
-        G.add_edge(entry['node'], entry['dest'], weight=entry['distance'])
+# ========= BIT ERROR SIM =========
+def simulate_bit_errors(data, bit_error_rate):
+    corrupted = bytearray(data)
+    total_bits = len(corrupted) * 8
+    error_bits = int((bit_error_rate / 100) * total_bits)
+    for _ in range(error_bits):
+        bit_index = random.randint(0, total_bits - 1)
+        byte_index = bit_index // 8
+        bit_offset = bit_index % 8
+        corrupted[byte_index] ^= 1 << bit_offset
+    return bytes(corrupted)
 
-    pos = nx.spring_layout(G)
-    labels = nx.get_edge_attributes(G, 'weight')
-    fig, ax = plt.subplots()
-    nx.draw(G, pos, with_labels=True, node_color='lightblue', node_size=800, ax=ax)
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=labels, ax=ax)
-    ax.set_title("RIP Routing Topology")
-    st.pyplot(fig)
-
-    if source is not None and target is not None:
-        try:
-            path = nx.dijkstra_path(G, source=source, target=target, weight='weight')
-            st.success(f"📦 Shortest path from {source} to {target}: {path}")
-        except nx.NetworkXNoPath:
-            st.error(f"No path from {source} to {target}")
-
-# Main App
+# ========= STREAMLIT APP =========
 def main():
-    st.title("🔐 Encrypted Messenger with RIP, TCP & Bit Error Handling")
+    st.title("🛰️ Encrypted Messenger with RIP-Based Routing")
 
-    with st.form("input_form"):
-        message = st.text_area("Enter message to send")
-        mss = st.number_input("Enter MSS (Maximum Segment Size)", min_value=1, value=64)
-        ssthresh = st.number_input("Enter initial SSTHRESH", min_value=1, value=8)
-        bit_error_rate = st.slider("Bit error rate (%)", 0, 100, 0)
-        packet_loss_rate = st.slider("Packet loss rate (%)", 0, 100, 20)
+    role = st.radio("Select Role", ["Sender", "Receiver"])
 
-        rip_table = []
-        num_nodes = st.number_input("Number of nodes in RIP network", min_value=2, value=3)
-        for i in range(num_nodes):
-            st.markdown(f"Node {i} routing table")
-            num_routes = st.number_input(f"  Number of routes from Node {i}", min_value=1, max_value=10, value=2, key=f"routes_{i}")
-            for j in range(num_routes):
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    dest = st.number_input(f"Dest Node", key=f"dest_{i}_{j}")
-                with col2:
-                    next_hop = st.number_input(f"Next Hop", key=f"hop_{i}_{j}")
-                with col3:
-                    dist = st.number_input(f"Distance", key=f"dist_{i}_{j}")
-                rip_table.append({'node': i, 'dest': dest, 'next_hop': next_hop, 'distance': dist})
+    if role == "Sender":
+        text = st.text_area("Enter message to send")
+        mss = st.number_input("Enter MSS (packet size)", value=32, min_value=8)
+        ssthresh = st.number_input("Enter initial SSTHRESH", value=16)
+        bit_error_rate = st.slider("Bit Error Rate (%)", 0, 100, 5)
+        loss_rate = st.slider("Packet Loss Rate (%)", 0, 100, 10)
 
-        source_node = st.number_input("Source Node", min_value=0, value=0)
-        target_node = st.number_input("Target Node", min_value=0, value=1)
-
-        submitted = st.form_submit_button("Submit & Simulate")
-
-    if submitted:
         key = b"thisisasecretkey"
-        encrypted = aes_encrypt(message.encode(), key)
-        stuffed = character_stuff(encrypted)
 
-        if bit_error_rate > 0:
-            stuffed = simulate_bit_errors(stuffed, bit_error_rate)
+        if st.button("Send"):
+            st.subheader("Step 1: AES Encryption")
+            encrypted = aes_encrypt(text.encode(), key)
+            st.code(encrypted.hex())
 
-        total_packets = (len(stuffed) + mss - 1) // mss
-        lost_packets = sorted(random.sample(range(total_packets), int((packet_loss_rate / 100) * total_packets)))
+            st.subheader("Step 2: Character Stuffing")
+            stuffed = character_stuff(encrypted)
+            st.code(stuffed.hex())
 
-        st.subheader("📦 Encrypted & Stuffed Output")
-        st.write(f"Encrypted Length: {len(encrypted)} bytes")
-        st.code(encrypted.hex())
-        st.write(f"Stuffed Length: {len(stuffed)} bytes")
-        st.code(stuffed.hex())
-        st.write(f"Total Packets: {total_packets}")
-        st.write(f"Lost Packets: {lost_packets}")
+            if bit_error_rate > 0:
+                st.subheader("Step 3: Simulate Bit Errors")
+                stuffed = simulate_bit_errors(stuffed, bit_error_rate)
+                st.code(stuffed.hex())
 
-        st.subheader("📈 TCP Simulation (Tahoe)")
-        time_series, cwnd_series, ssthresh_series, states = simulate_tcp_on_data(total_packets, ssthresh, lost_packets)
+            st.subheader("Step 4: Packetization")
+            packets = [stuffed[i:i+mss] for i in range(0, len(stuffed), mss)]
+            total_packets = len(packets)
+            st.write(f"Total packets: {total_packets}")
 
-        for t, c, s, state in zip(time_series, cwnd_series, ssthresh_series, states):
-            st.text(f"Time: {t} | CWND: {c} | SSTHRESH: {s} | State: {state}")
-            time.sleep(0.05)
+            st.subheader("Step 5: TCP Simulation")
+            num_losses = int(loss_rate / 100 * total_packets)
+            loss_packets = sorted(random.sample(range(total_packets), num_losses))
+            t, cwnd, ssthresh_list, state = simulate_tcp(total_packets, ssthresh, loss_packets)
+            st.line_chart({"CWND": cwnd, "SSTHRESH": ssthresh_list})
 
-        st.subheader("🗺️ RIP Routing")
-        plot_rip_graph(rip_table, source_node, target_node)
+            st.subheader("Step 6: Routing Table")
+            num_links = st.number_input("Enter number of links in RIP table", 1, 20, 4)
+            rip_table = []
+            for i in range(num_links):
+                cols = st.columns(3)
+                src = cols[0].text_input(f"Link {i+1} - From", value=f"A", key=f"src{i}")
+                dst = cols[1].text_input(f"To", value=f"B", key=f"dst{i}")
+                cost = cols[2].number_input(f"Cost", min_value=1, value=1, key=f"cost{i}")
+                rip_table.append({'src': src, 'dst': dst, 'cost': cost})
 
-        st.subheader("📬 Receiver Side")
-        try:
-            recovered = character_unstuff(stuffed)
-            decrypted = aes_decrypt(recovered, key)
-            st.success("Recovered Message:")
-            st.code(decrypted.decode(errors='ignore'))
-        except Exception as e:
-            st.error(f"Decryption failed: {e}")
+            G = build_routing_graph(rip_table)
+            src_node = st.text_input("Enter source node", value="A")
+            dst_node = st.text_input("Enter destination node", value="B")
+
+            path = get_shortest_path(G, src_node, dst_node)
+            draw_graph(G, path)
+            if path:
+                st.success(f"Message will be sent via path: {path}")
+                # Save for receiver
+                st.session_state['sent_data'] = {
+                    'payload': stuffed,
+                    'key': key,
+                }
+
+    elif role == "Receiver":
+        st.subheader("📥 Waiting for Incoming Data...")
+        if 'sent_data' in st.session_state:
+            payload = st.session_state['sent_data']['payload']
+            key = st.session_state['sent_data']['key']
+            st.write("Data received!")
+
+            st.subheader("Unstuffing")
+            try:
+                unstuffed = character_unstuff(payload)
+                st.code(unstuffed.hex())
+
+                st.subheader("Decrypting")
+                decrypted = aes_decrypt(unstuffed, key)
+                st.success("Decrypted Message:")
+                st.code(decrypted.decode(errors='ignore'))
+            except Exception as e:
+                st.error(f"Error while processing received message: {e}")
+        else:
+            st.warning("No message has been sent yet.")
 
 if __name__ == "__main__":
     main()
